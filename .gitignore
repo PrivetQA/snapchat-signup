@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+data/local.json
+data/runs/
+data/accounts.json
+play-state.json
