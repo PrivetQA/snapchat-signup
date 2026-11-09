@@ -729,7 +729,7 @@ def load_play() -> tuple[str, str, str]:
         state_path = Path(os.environ["PLAY_STATE"])
     else:
         state_path = None
-        for parent in (Path.cwd(), *Path.cwd().parents):
+        for parent in (ROOT, *ROOT.parents, Path.cwd(), *Path.cwd().parents):
             candidate = parent / ".cursor" / "skills" / "play-store" / "state.json"
             if candidate.is_file():
                 state_path = candidate
