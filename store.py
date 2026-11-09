@@ -21,13 +21,28 @@ def write_run(run_number: int, record: dict) -> Path:
 
 
 def save_account(account: dict) -> None:
+    upsert_account(account)
+
+
+def upsert_account(account: dict) -> Path:
+    """Keep one row per run so a later step updates the password and phone already saved."""
     ensure()
     with ACCOUNTS.open("a+") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         handle.seek(0)
-        raw = handle.read() or "[]"
-        rows = json.loads(raw)
-        rows.append(account)
+        rows = json.loads(handle.read() or "[]")
+        key = account.get("run_number")
+        if key is None:
+            rows.append(account)
+        else:
+            for index, row in enumerate(rows):
+                if row.get("run_number") == key:
+                    rows[index] = {**row, **account}
+                    break
+            else:
+                rows.append(account)
         handle.seek(0)
         handle.truncate()
         handle.write(json.dumps(rows, ensure_ascii=False, indent=2) + "\n")
+        handle.flush()
+    return ACCOUNTS

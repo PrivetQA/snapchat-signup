@@ -32,6 +32,24 @@ class IdentityTests(unittest.TestCase):
 
 
 class PlayDecisionTests(unittest.TestCase):
+    def test_play_leaves_snapchat_birthday(self):
+        decision = play_decision([
+            node("Birthday", "android.widget.TextView"),
+            node("Continue"),
+            node("Nov", "android.widget.TextView"),
+            node("9", "android.widget.TextView"),
+            node("2009", "android.widget.TextView"),
+        ])
+        self.assertEqual(decision, {"op": "snapchat"})
+
+    def test_play_listing_opens_snapchat(self):
+        decision = snap_decision(
+            ["Snapchat", "Snap Inc", "Uninstall", "Open"],
+            {"code_accepted": False},
+        )
+        self.assertEqual(decision["op"], "tap")
+        self.assertEqual(decision["text"], "Open")
+
     def test_email_page_waits_while_it_is_loading(self):
         decision = play_decision([
             node("Forgot email?", "android.widget.TextView"),
@@ -39,6 +57,20 @@ class PlayDecisionTests(unittest.TestCase):
             node("", "android.widget.EditText", "identifierId"),
         ])
         self.assertEqual(decision, {"op": "wait"})
+
+    def test_terms_wait_while_loading(self):
+        decision = play_decision([
+            node("I agree"),
+            node("Loading", "android.widget.TextView"),
+        ])
+        self.assertEqual(decision, {"op": "wait"})
+
+    def test_terms_agree_when_the_page_is_still(self):
+        decision = play_decision([
+            node("I agree"),
+            node("Google Terms of Service", "android.widget.TextView"),
+        ])
+        self.assertEqual(decision, {"op": "tap", "text": "I agree", "class_name": "android.widget.Button"})
 
     def test_password_screen_wins_over_forgot_email(self):
         decision = play_decision([
@@ -180,9 +212,27 @@ class PlayDecisionTests(unittest.TestCase):
         ])
         self.assertEqual(decision["text"], "Wait")
 
+    def test_notification_access_is_declined(self):
+        decision = play_decision([
+            node("Notification read, reply & control", "android.widget.TextView"),
+            node("Navigate up"),
+            node("Allowed"),
+            node("Not allowed"),
+        ])
+        self.assertEqual(decision["text"], "Not allowed")
+
     def test_sign_in_prompt_confirms_it_is_me(self):
         decision = play_decision([
             node("Are you trying to sign in?", "android.widget.TextView"),
+            node("No, don't allow"),
+            node("Yes, it's me"),
+        ])
+        self.assertEqual(decision["text"], "Yes, it's me")
+
+    def test_sign_in_prompt_wins_over_loading(self):
+        decision = play_decision([
+            node("Are you trying to sign in?"),
+            node("Loading"),
             node("No, don't allow"),
             node("Yes, it's me"),
         ])
@@ -194,6 +244,13 @@ class PlayDecisionTests(unittest.TestCase):
 
 
 class SnapDecisionTests(unittest.TestCase):
+    def test_google_sign_in_prompt_is_confirmed(self):
+        decision = snap_decision(
+            ["Are you trying to sign in?", "No, don't allow", "Yes, it's me"],
+            {"notifications": "deny", "bitmoji": "skip"},
+        )
+        self.assertEqual(decision["text"], "Yes, it's me")
+
     def test_email_with_skip_skips(self):
         decision = snap_decision(["Add your email", "Skip"], {"notifications": "deny", "bitmoji": "skip"})
         self.assertEqual(decision["text"], "Skip")
@@ -205,12 +262,69 @@ class SnapDecisionTests(unittest.TestCase):
         )
         self.assertEqual(decision, {"op": "block", "reason": "email required"})
 
+    def test_whatsapp_delivery_changes_the_number(self):
+        decision = snap_decision(
+            ["Your verification code will be sent via WhatsApp"],
+            {"notifications": "deny", "bitmoji": "skip"},
+        )
+        self.assertEqual(decision["op"], "change_number")
+
+    def test_phone_consent_can_mention_whatsapp(self):
+        decision = snap_decision(
+            [
+                "Phone number",
+                "By proceeding, you agree to receive transactional messaging via text, WhatsApp or other messaging channels",
+                "Continue",
+            ],
+            {"notifications": "deny", "bitmoji": "skip"},
+        )
+        self.assertEqual(decision["op"], "type_phone")
+
+    def test_code_page_waits_for_the_sms(self):
+        decision = snap_decision(
+            ["Confirm your number", "Enter the code we sent to", "Resend in 55"],
+            {"notifications": "deny", "bitmoji": "skip"},
+        )
+        self.assertEqual(decision["op"], "type_sms")
+
+    def test_phone_page_asks_for_a_number(self):
+        decision = snap_decision(
+            ["Mobile number", "Phone number", "Continue"],
+            {"notifications": "deny", "bitmoji": "skip"},
+        )
+        self.assertEqual(decision["op"], "type_phone")
+
+    def test_add_friends_is_skipped(self):
+        decision = snap_decision(
+            ["Add Friends", "Skip", "Someone"],
+            {"notifications": "deny", "bitmoji": "skip"},
+        )
+        self.assertEqual(decision["text"], "Skip")
+
     def test_contacts_are_declined(self):
         decision = snap_decision(
             ["Allow Snapchat to access your contacts?", "Allow", "Don't allow"],
             {"notifications": "allow", "bitmoji": "skip"},
         )
         self.assertEqual(decision["text"], "Don't allow")
+
+    def test_contacts_on_the_camera_use_cancel(self):
+        decision = snap_decision(
+            [
+                "Memories", "Camera Capture", "Chat", "Map",
+                "Allow Snapchat to access your contacts to find your friends.",
+                "Allow", "Cancel",
+            ],
+            {"notifications": "allow", "bitmoji": "skip", "code_accepted": False},
+        )
+        self.assertEqual(decision["text"], "Cancel")
+
+    def test_camera_home_is_the_feed(self):
+        decision = snap_decision(
+            ["Memories", "Camera Capture", "Chat", "Map"],
+            {"code_accepted": False},
+        )
+        self.assertEqual(decision["op"], "feed")
 
     def test_suspicious_activity_blocks(self):
         decision = snap_decision([
@@ -232,7 +346,7 @@ class SnapDecisionTests(unittest.TestCase):
             "Change my username",
             "Continue",
         ], {})
-        self.assertEqual(decision["text"], "Change my username")
+        self.assertEqual(decision["text"], "Continue")
 
     def test_permissions_primer_continues(self):
         decision = snap_decision([

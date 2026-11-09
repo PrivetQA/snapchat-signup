@@ -3,6 +3,27 @@
 from __future__ import annotations
 
 
+def is_snapchat_signup(texts: list[str]) -> bool:
+    """Snapchat registration is in front. Play must leave it alone."""
+    present = {norm(text) for text in texts if text}
+    blob = " ".join(present).lower()
+    if "Birthday" in present and "Continue" in present:
+        return True
+    return any(
+        phrase in blob
+        for phrase in (
+            "what's your name",
+            "when's your birthday",
+            "when is your birthday",
+            "step 1 of 5",
+            "step 2 of 5",
+            "step 3 of 5",
+            "step 4 of 5",
+            "step 5 of 5",
+        )
+    )
+
+
 def norm(text: str) -> str:
     return text.replace("\u2019", "'").replace("\u2018", "'").strip()
 
@@ -13,6 +34,11 @@ def play_decision(nodes: list[dict]) -> dict:
     ids = " ".join(str(node.get("resource_id") or "") for node in nodes)
     blob = " ".join(texts).lower()
 
+    # This sheet can cover Play or Snapchat at any step. Always confirm.
+    if "are you trying to sign in" in blob:
+        if "Yes, it's me" in present:
+            return _tap("Yes, it's me", "android.widget.Button")
+        return {"op": "wait"}
     if _captcha(blob):
         return {"op": "block", "reason": "play captcha"}
     if "isn't responding" in blob and "Wait" in present:
@@ -22,8 +48,11 @@ def play_decision(nodes: list[dict]) -> dict:
     phone_later = "try again later" in blob and "Google Authenticator" not in present
     if "confirm it's you" in blob or "couldn't sign in" in blob or phone_later:
         return {"op": "block", "reason": "play refused sign-in"}
-    if "are you trying to sign in" in blob and "Yes, it's me" in present:
-        return _tap("Yes, it's me", "android.widget.Button")
+    # The progress line stays on the same button. Wait until it leaves.
+    if "Loading" in present:
+        return {"op": "wait"}
+    if is_snapchat_signup(list(present)):
+        return {"op": "snapchat"}
     if "add a selfie" in blob or "selfie for sign in" in blob:
         return _tap("Not now", "android.widget.Button")
     if "can't begin video verification" in blob:
@@ -81,6 +110,9 @@ def play_decision(nodes: list[dict]) -> dict:
         return _tap("Skip")
     if "complete account setup" in blob and "Continue" in present:
         return _tap("Continue", "android.widget.Button")
+    # Play asks to read notifications while signing in. Decline and continue.
+    if "Not allowed" in present and "Allowed" in present:
+        return _tap("Not allowed")
     if "identifierId" in ids and "Forgot email?" in present:
         if "loading" in blob:
             return {"op": "wait"}
@@ -102,14 +134,26 @@ def snap_decision(texts: list[str], plan: dict, nodes: list[dict] | None = None)
     present = {norm(text) for text in texts if text}
     blob = " ".join(norm(text) for text in texts).lower()
 
+    if "are you trying to sign in" in blob:
+        if "Yes, it's me" in present:
+            return _tap("Yes, it's me", "android.widget.Button")
+        return {"op": "unknown"}
     if any(phrase in blob for phrase in (
         "confirm it's you", "try again later", "unusual activity", "captcha",
         "temporarily disabled", "suspicious activity",
     )):
         code = _support_code(blob)
         return {"op": "block", "reason": f"snapchat {code}" if code else "snapchat check"}
+    if "welcome back" in blob and "No" in present:
+        return _tap("No")
+    if "check your internet" in blob:
+        return {"op": "internet"}
+    if "Uninstall" in present and "Open" in present and "Snapchat" in present:
+        return _tap("Open")
     if _is_feed(present) and plan.get("code_accepted"):
         return {"op": "feed"}
+    if "sent via whatsapp" in blob or "code via whatsapp" in blob:
+        return {"op": "change_number"}
     if "enter the code" in blob or "verification code" in blob or "we sent you" in blob:
         return {"op": "type_sms"}
     if any(phrase in blob for phrase in ("incorrect code", "wrong code", "code is invalid", "invalid code")):
@@ -125,9 +169,13 @@ def snap_decision(texts: list[str], plan: dict, nodes: list[dict] | None = None)
         if "Continue" in present or "Next" in present or "Sign Up" in present:
             return {"op": "block", "reason": "email required"}
     if any(phrase in blob for phrase in ("contact", "contacts")) and (
-        "Don't allow" in present or "Deny" in present or "Don't allow access" in present
+        "Don't allow" in present or "Deny" in present or "Don't allow access" in present or "Cancel" in present
     ):
-        return _tap("Don't allow" if "Don't allow" in present else "Deny")
+        if "Don't allow" in present:
+            return _tap("Don't allow")
+        if "Deny" in present:
+            return _tap("Deny")
+        return _tap("Cancel")
     if "notification" in blob:
         allow = plan.get("notifications") == "allow"
         if allow and "Allow" in present:
@@ -148,12 +196,16 @@ def snap_decision(texts: list[str], plan: dict, nodes: list[dict] | None = None)
         return _tap("Allow")
     if "username" in blob and any(phrase in blob for phrase in ("taken", "not available", "already in use")):
         return {"op": "username_taken"}
+    if "your username is" in blob and "Continue" in present:
+        return _tap("Continue")
     if "Change my username" in present:
         return _tap("Change my username")
     if "password" in blob and any(phrase in blob for phrase in ("too short", "too weak", "try another", "not strong")):
         return {"op": "password_rejected"}
     if "Use phone number instead" in present:
         return _tap("Use phone number instead")
+    if "country or region" in blob:
+        return {"op": "type_phone"}
     if any(phrase in blob for phrase in ("mobile number", "phone number")) and "code" not in blob:
         return {"op": "type_phone"}
     if "birthday" in blob or "when's your birthday" in blob or "when is your birthday" in blob:
@@ -169,8 +221,10 @@ def snap_decision(texts: list[str], plan: dict, nodes: list[dict] | None = None)
     signup = _welcome_signup(nodes or [])
     if signup:
         return {"op": "tap_bounds", "bounds": signup}
-    if "Find friends" in blob and ("Skip" in present or "Not now" in present):
+    if ("find friends" in blob or "add friends" in blob) and ("Skip" in present or "Not now" in present):
         return _tap("Skip" if "Skip" in present else "Not now")
+    if _is_camera_home(present):
+        return {"op": "feed"}
     return {"op": "unknown"}
 
 
@@ -203,6 +257,12 @@ def _classes_for(nodes: list[dict], text: str) -> set[str]:
 
 def _is_feed(present: set[str]) -> bool:
     return {"Chat", "Stories", "Spotlight"} <= present
+
+
+def _is_camera_home(present: set[str]) -> bool:
+    return "Chat" in present and "Memories" in present and (
+        "Camera Capture" in present or "Map" in present
+    )
 
 
 def _welcome_signup(nodes: list[dict]):

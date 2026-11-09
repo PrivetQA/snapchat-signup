@@ -108,9 +108,14 @@ async def _sign_in_and_install(session, record, email, password, secret, screen)
     email_typed = False
     password_typed = False
     code_typed = False
-    waited_out = 0
     for _ in range(40):
         nodes = await _play_nodes(session)
+        texts = _texts(nodes)
+        if "Home screen" in texts and not await _play_resumed(session):
+            print("Play left on its own, opening it again", flush=True)
+            await _open_snap_page(session)
+            await asyncio.sleep(2)
+            continue
         decision = play_decision(nodes)
         if decision["op"] != "type_password":
             password_typed = False
@@ -175,22 +180,13 @@ async def _sign_in_and_install(session, record, email, password, secret, screen)
             await _submit_code(session, fresh, screen)
             code_typed = True
         elif decision["op"] == "hide_keyboard":
-            await session.adb_shell("input keyevent 4", timeout=15)
-            await asyncio.sleep(0.6)
+            await _hide_keyboard(session)
         elif decision["op"] == "back_or_get_started":
             await _back_or_get_started(session, screen)
         elif decision["op"] == "tap":
             if decision["text"] == "Wait":
-                waited_out += 1
-                if waited_out >= 3 and _find(nodes, "Close app", None):
-                    await _tap(session, nodes, {"op": "tap", "text": "Close app"}, screen)
-                    await asyncio.sleep(1)
-                    await _open_snap_page(session)
-                    waited_out = 0
-                    await asyncio.sleep(2)
-                    continue
-            else:
-                waited_out = 0
+                await asyncio.sleep(2)
+                continue
             await _tap(session, nodes, decision, screen)
         await asyncio.sleep(2)
     else:
@@ -570,6 +566,8 @@ async def _replace_field(session, nodes, value: str, screen) -> None:
 async def _back_or_get_started(session, screen) -> None:
     await session.adb_shell("input keyevent 4", timeout=15)
     await asyncio.sleep(0.5)
+    if not await _play_resumed(session):
+        return
     nodes = await _play_nodes(session)
     if "link your google services" not in " ".join(_texts(nodes)).lower():
         return
@@ -577,7 +575,8 @@ async def _back_or_get_started(session, screen) -> None:
     nodes = await _play_nodes(session)
     await _tap(session, nodes, {"op": "tap", "text": "Get started"}, screen)
     await asyncio.sleep(1)
-    await session.adb_shell("input keyevent 4", timeout=15)
+    if await _play_resumed(session):
+        await session.adb_shell("input keyevent 4", timeout=15)
 
 
 async def _keyboard_shown(session) -> bool:
@@ -603,7 +602,7 @@ def _needs_reveal(node, screen) -> bool:
 
 async def _tap_or_reveal(session, nodes, decision, screen) -> None:
     node = _find(nodes, decision["text"], decision.get("class_name"))
-    if _needs_reveal(node, screen):
+    if _needs_reveal(node, screen) and await _keyboard_shown(session):
         await session.adb_shell("input keyevent 4", timeout=15)
         await asyncio.sleep(0.6)
         nodes = await _play_nodes(session)
@@ -748,7 +747,17 @@ async def _dump(session) -> str:
     return ""
 
 
+async def _play_resumed(session) -> bool:
+    raw = await session.adb_shell(
+        "dumpsys activity activities | grep topResumedActivity",
+        timeout=20,
+    )
+    return "com.android.vending" in raw
+
+
 async def _open_snap_page(session) -> None:
+    if await _play_resumed(session):
+        return
     await session.adb_shell(
         f"am start -a android.intent.action.VIEW -d market://details?id={SNAP_PACKAGE}",
         timeout=20,

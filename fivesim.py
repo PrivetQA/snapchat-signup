@@ -64,7 +64,15 @@ def prepared_countries(offers: list[dict], limit: int = 5) -> list[str]:
         (offer for offer in stock if offer["country"] not in EUROPE),
         key=lambda offer: (offer["cost"], -offer["rate"]),
     )
-    return [offer["country"] for offer in list(europe) + list(others)][:limit]
+    picked: list[str] = []
+    for offer in list(europe) + list(others):
+        country = offer["country"]
+        if country in picked:
+            continue
+        picked.append(country)
+        if len(picked) == limit:
+            break
+    return picked
 
 
 class FiveSim:
