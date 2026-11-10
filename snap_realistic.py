@@ -52,7 +52,7 @@ from register import (
     _texts,
     _totp,
 )
-from store import upsert_account, write_run
+from store import load_account, upsert_account, write_run
 from telephort_sdk import TelephortClient
 
 _read_nodes = _play_nodes
@@ -169,15 +169,46 @@ def next_run() -> int:
     return (max(numbers) if numbers else 0) + 1
 
 
+def plan_from_row(row: dict | None) -> dict | None:
+    """Reuse the password already stored for this device. A resume must not invent another one."""
+    if not row or not row.get("username") or not row.get("password"):
+        return None
+    parts = str(row.get("name") or "").split()
+    if len(parts) < 2:
+        return None
+    year = row.get("birthday_year") or row.get("year") or 2000
+    return {
+        "first": parts[0],
+        "last": parts[-1],
+        "year": int(year),
+        "username": row["username"],
+        "password": row["password"],
+        "username_pattern": row.get("username_pattern") or "first_last",
+        "password_pattern": row.get("password_pattern") or "word_digits",
+        "birthday": row.get("birthday") or "",
+        "birthday_year": row.get("birthday_year") or year,
+        "phone": row.get("phone") or "",
+        "phone_country": row.get("phone_country") or "",
+        "phone_on_screen": row.get("phone_on_screen") or "",
+        "email": row.get("email") or "",
+        "notifications": row.get("notifications") or "deny",
+        "username_tries": 1,
+        "password_tries": 1,
+        "from_saved": True,
+        "from_saved_status": row.get("status") or "",
+    }
+
+
 def write_account(record: dict, plan: dict) -> None:
-    if os.environ.get("SNAP_RESUME") == "1":
-        return
     account = {
         "run_number": record["run_number"],
         "device_id": record.get("device_id") or "",
         "name": f"{plan['first']} {plan['last']}",
         "username": plan.get("username") or "",
         "password": plan.get("password") or "",
+        "username_pattern": plan.get("username_pattern") or "",
+        "password_pattern": plan.get("password_pattern") or "",
+        "notifications": plan.get("notifications") or "",
         "birthday": plan.get("birthday") or "",
         "birthday_year": plan.get("birthday_year") or plan.get("year"),
         "phone": plan.get("phone") or "",
@@ -1213,15 +1244,17 @@ async def main() -> None:
     if not supported(email) or not supported(password):
         raise RuntimeError("play secret uses a key that is not on the measured keyboard")
     rng = random.Random()
-    plan = None
-    for _ in range(40):
-        candidate = make_plan(rng)
-        fields = (candidate["first"], candidate["last"], candidate["username"], candidate["password"])
-        if all(supported(field) for field in fields):
-            plan = candidate
-            break
+    saved = load_account(DEVICE)
+    plan = plan_from_row(saved)
     if plan is None:
-        raise RuntimeError("signup text uses a key that is not on the measured keyboard")
+        for _ in range(40):
+            candidate = make_plan(rng)
+            fields = (candidate["first"], candidate["last"], candidate["username"], candidate["password"])
+            if all(supported(field) for field in fields):
+                plan = candidate
+                break
+        if plan is None:
+            raise RuntimeError("signup text uses a key that is not on the measured keyboard")
     # The finished run skipped Bitmoji. Picking one has no working path here.
     plan["bitmoji"] = "skip"
     record = {
@@ -1231,9 +1264,11 @@ async def main() -> None:
         "notes": ["realistic hand"],
     }
     write_run(record["run_number"], {**record, "plan_name": plan["first"]})
-    if os.environ.get("SNAP_RESUME") != "1":
+    if plan.get("from_saved_status") in ("password", "phone", "code", "feed"):
+        plan["account_status"] = plan["from_saved_status"]
+    else:
         plan["account_status"] = "planned"
-        write_account(record, plan)
+    write_account(record, plan)
     client = TelephortClient("https://demo.telephort.app/api", timeout=120)
     client.auth.login(local["telephort_email"], local["telephort_password"])
     client.set_team_id(client.teams.list_mine()["items"][0]["id"])
@@ -1303,8 +1338,13 @@ async def snap_loop(hand: Hand, plan: dict, record: dict, local: dict) -> None:
             raise RuntimeError(decision.get("reason") or "snap blocked")
         if op == "feed":
             print("account reached the feed", flush=True)
-            plan["account_status"] = "feed"
-            write_account(record, plan)
+            typed = plan.get("secret_typed")
+            saved_status = plan.get("from_saved_status") or ""
+            if typed or saved_status in ("name", "birthday", "username", "password", "phone", "code", "feed"):
+                plan["account_status"] = "feed"
+                write_account(record, plan)
+            else:
+                print("camera is open; this run did not type the password, so the saved plan was left unchanged", flush=True)
             return
         if op == "tap":
             label = decision["text"]
@@ -1352,6 +1392,7 @@ async def snap_loop(hand: Hand, plan: dict, record: dict, local: dict) -> None:
             write_account(record, plan)
         elif op == "type_password":
             await fill_and_continue(hand, nodes, plan["password"])
+            plan["secret_typed"] = True
             plan["account_status"] = "password"
             write_account(record, plan)
         elif op == "username_taken":
@@ -1368,6 +1409,7 @@ async def snap_loop(hand: Hand, plan: dict, record: dict, local: dict) -> None:
                     break
             if not accepted:
                 raise RuntimeError("password rejected")
+            plan["secret_typed"] = True
             plan["account_status"] = "password"
             write_account(record, plan)
         elif op == "code_rejected":

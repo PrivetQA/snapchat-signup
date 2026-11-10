@@ -1,9 +1,13 @@
+import json
 import random
+import tempfile
 import unittest
+from pathlib import Path
 
 from decisions import play_decision, snap_decision
 from fivesim import choose_country, parse_offers, prepared_countries
 from identity import make_plan, password_ok, username_rejected
+import store
 
 
 def node(text, class_name="android.widget.Button", resource_id=""):
@@ -388,6 +392,67 @@ class FiveSimTests(unittest.TestCase):
         })
         self.assertEqual(choose_country(offers), "poland")
         self.assertEqual(prepared_countries(offers, 2), ["poland", "england"])
+
+
+class AccountFileTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = Path(self.directory.name) / "accounts.json"
+        self.path.write_text("[]\n")
+        self.original = store.ACCOUNTS
+        store.ACCOUNTS = self.path
+
+    def tearDown(self):
+        store.ACCOUNTS = self.original
+        self.directory.cleanup()
+
+    def test_device_and_signup_share_one_row(self):
+        store.save_device({
+            "device_id": "device-1",
+            "device_name": "Cologne",
+            "locale": "en_US",
+            "proxy_host": "154.196.50.126",
+            "proxy_password": "secret",
+            "status": "device_created",
+        })
+        store.upsert_account({
+            "device_id": "device-1",
+            "run_number": 3,
+            "name": "Ava Ward",
+            "username": "ava",
+            "password": "Cloud771",
+            "status": "password",
+        })
+        store.upsert_account({
+            "device_id": "device-1",
+            "status": "planned",
+            "password": "other",
+            "username": "other",
+        })
+        rows = json.loads(self.path.read_text())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["password"], "Cloud771")
+        self.assertEqual(rows[0]["username"], "ava")
+        self.assertEqual(rows[0]["proxy_password"], "secret")
+        self.assertEqual(rows[0]["status"], "password")
+        self.assertEqual(rows[0]["locale"], "en_US")
+
+    def test_a_later_step_updates_the_same_device(self):
+        store.upsert_account({
+            "device_id": "device-1",
+            "username": "ava",
+            "password": "Cloud771",
+            "status": "password",
+        })
+        store.upsert_account({
+            "device_id": "device-1",
+            "phone": "+10000000000",
+            "status": "feed",
+        })
+        row = store.load_account("device-1")
+        self.assertEqual(row["status"], "feed")
+        self.assertEqual(row["password"], "Cloud771")
+        self.assertEqual(row["phone"], "+10000000000")
 
 
 if __name__ == "__main__":
